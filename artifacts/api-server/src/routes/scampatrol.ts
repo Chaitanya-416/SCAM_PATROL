@@ -26,7 +26,7 @@ const router: IRouter = Router();
 
 seedDemoIncidents();
 
-router.post("/scans", (req, res): void => {
+router.post("/scans", async (req, res): Promise<void> => {
   const parsed = CreateScanBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -36,7 +36,7 @@ router.post("/scans", (req, res): void => {
     res.status(400).json({ error: "Enter something to analyze." });
     return;
   }
-  const result = analyzeScan({
+  const result = await analyzeScan({
     ...parsed.data,
     input: parsed.data.input.trim(),
     callerName: parsed.data.callerName?.trim(),

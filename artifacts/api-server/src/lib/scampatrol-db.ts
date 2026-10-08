@@ -14,7 +14,7 @@ import type {
 const configuredPath = process.env.SCAMPATROL_DB_PATH;
 const databasePath = resolve(
   process.cwd(),
-  configuredPath ?? "artifacts/api-server/data/scampatrol.sqlite",
+  configuredPath ?? "data/scampatrol.sqlite",
 );
 
 mkdirSync(dirname(databasePath), { recursive: true });
@@ -347,12 +347,12 @@ export function reportIncident(
     database
       .prepare(
         `UPDATE incidents
-         SET status = 'reported',
+         SET status = CASE WHEN id = ? THEN 'reported' ELSE status END,
              report_count = (SELECT report_count FROM reputation
                              WHERE kind = ? AND identifier = ?)
-         WHERE id = ?`,
+         WHERE kind = ? AND target = ?`,
       )
-      .run(incident.kind, incident.target, id);
+      .run(id, incident.kind, incident.target, incident.kind, incident.target);
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");

@@ -5,6 +5,7 @@ import {
   hasIncidents,
   insertIncident,
 } from "./scampatrol-db";
+import { AIReviewError, reviewScanWithAI } from "./scampatrol-ai";
 
 const URL_PATTERN = /(?:https?:\/\/|www\.)[^\s<>"']+/i;
 const PHONE_PATTERN = /(?<!\w)\+?\d[\d\s().-]{7,}\d(?!\w)/;
@@ -136,6 +137,15 @@ function inspectUrl(value: string, signals: RiskSignal[]): void {
       13,
     );
   }
+  if (/(?:verify|login|signin|payment|fee|release|claim|re-auth)/i.test(url.pathname)) {
+    signal(
+      signals,
+      "suspicious-url-path",
+      "Payment or verification path",
+      "The web address includes a payment, release, login, or verification path often used in scam lures.",
+      14,
+    );
+  }
   const tld = host.split(".").at(-1)?.toLowerCase() ?? "";
   if (["click", "top", "work", "zip", "mov", "loan", "icu", "monster"].includes(tld)) {
     signal(
@@ -179,12 +189,22 @@ function detectCategory(text: string, signals: RiskSignal[]): string {
   return "Unclassified";
 }
 
-export function analyzeScan(input: ScanInput): ScanResult {
+interface LocalAnalysis {
+  target: string;
+  riskScore: number;
+  category: string;
+  signals: RiskSignal[];
+}
+
+function analyzeLocally(input: ScanInput): LocalAnalysis {
   const target = normalizedTarget(input);
   const content = `${input.input} ${input.callerName ?? ""}`.trim();
   const signals: RiskSignal[] = [];
 
-  if (/urgent|immediately|act now|expires?|final notice|last warning|within \d+ minutes|will be (?:closed|blocked|suspended)|today only/i.test(content)) {
+  if (
+    /urgent|immediately|act now|expires?|final notice|last warning|within \d+ minutes|will be (?:closed|blocked|suspended)|today only/i.test(content) ||
+    /(?:pay|verify|click|act|respond|reply|claim).{0,35}\btoday\b/i.test(content)
+  ) {
     signal(
       signals,
       "urgency-pressure",
@@ -211,7 +231,11 @@ export function analyzeScan(input: ScanInput): ScanResult {
       32,
     );
   }
-  if (/send (?:money|payment)|pay (?:a )?(?:fee|fine|tax)|bank details|card details|cvv|gift card/i.test(content)) {
+  if (
+    /send (?:money|payment)|pay (?:a )?(?:fee|fine|tax)|bank details|card details|cvv|gift card/i.test(content) ||
+    /\b(?:pay|send|transfer|settle|remit)\b.{0,35}\b(?:fee|fine|tax|charge|payment|amount)\b/i.test(content) ||
+    /\b(?:fee|fine|tax|charge|payment)\b.{0,35}\b(?:pay|send|transfer|settle|remit)\b/i.test(content)
+  ) {
     signal(
       signals,
       "payment-request",
@@ -281,6 +305,31 @@ export function analyzeScan(input: ScanInput): ScanResult {
     );
   }
 
+  return {
+    target,
+    riskScore,
+    category: detectCategory(content, signals),
+    signals,
+  };
+}
+
+function recommendationFor(input: ScanInput, riskScore: number): string {
+  return riskScore >= 70
+    ? input.kind === "call"
+      ? "Blocked in this simulation. Do not share codes or call back; contact the organization using its official number."
+      : "Do not open the link, reply, or share information. Verify the request through an official channel."
+    : riskScore >= 40
+      ? "Pause and verify the sender independently before replying, paying, or opening links."
+      : "No strong warning signs were found. Still verify unexpected requests using a trusted channel.";
+}
+
+function finishAnalysis(
+  input: ScanInput,
+  analysis: LocalAnalysis,
+  signals: RiskSignal[],
+  riskScore: number,
+  category: string,
+): ScanResult {
   const decision: ScanResult["decision"] =
     riskScore >= 70 ? "block" : riskScore >= 40 ? "caution" : "allow";
   const isBlocked = input.kind === "call" && riskScore >= 70;
@@ -289,26 +338,59 @@ export function analyzeScan(input: ScanInput): ScanResult {
     : riskScore >= 40
       ? "caution"
       : "safe";
-  const category = detectCategory(content, signals);
-  const recommendation =
-    riskScore >= 70
-      ? input.kind === "call"
-        ? "Blocked in this simulation. Do not share codes or call back; contact the organization using its official number."
-        : "Do not open the link, reply, or share information. Verify the request through an official channel."
-      : riskScore >= 40
-        ? "Pause and verify the sender independently before replying, paying, or opening links."
-        : "No strong warning signs were found. Still verify unexpected requests using a trusted channel.";
-
   return insertIncident(input, {
-    target,
+    target: analysis.target,
     riskScore,
     category,
-    recommendation,
+    recommendation: recommendationFor(input, riskScore),
     decision,
     status,
     isBlocked,
     signals,
   });
+}
+
+export async function analyzeScan(input: ScanInput): Promise<ScanResult> {
+  const local = analyzeLocally(input);
+  let signals: RiskSignal[];
+  let riskScore: number;
+  let category: string;
+  try {
+    const aiReview = await reviewScanWithAI(input);
+    const aiDetail = aiReview.reasons.length
+      ? aiReview.reasons.join(" ")
+      : "No additional contextual risk beyond the local signal checks was identified.";
+    signals = [
+      ...local.signals,
+      {
+        code: "ai-context-review",
+        title: "AI context review",
+        detail: aiDetail,
+        points: aiReview.additionalRiskPoints,
+      },
+    ];
+    riskScore = Math.min(100, local.riskScore + aiReview.additionalRiskPoints);
+    category =
+      aiReview.category !== "Unclassified" ? aiReview.category : local.category;
+  } catch (error) {
+    if (!(error instanceof AIReviewError)) throw error;
+    console.warn(
+      "ScamPatrol AI review unavailable; saving an explicitly local-only assessment.",
+    );
+    signals = [
+      ...local.signals,
+      {
+        code: "ai-review-unavailable",
+        title: "AI review unavailable",
+        detail:
+          "OpenAI did not return a review. This saved score uses local signal checks and target reputation only.",
+        points: 0,
+      },
+    ];
+    riskScore = local.riskScore;
+    category = local.category;
+  }
+  return finishAnalysis(input, local, signals, riskScore, category);
 }
 
 export function seedDemoIncidents(): void {
@@ -329,5 +411,8 @@ export function seedDemoIncidents(): void {
       callerName: "Bank security desk: urgent OTP verification required immediately",
     },
   ];
-  for (const sample of samples) analyzeScan(sample);
+  for (const sample of samples) {
+    const local = analyzeLocally(sample);
+    finishAnalysis(sample, local, local.signals, local.riskScore, local.category);
+  }
 }

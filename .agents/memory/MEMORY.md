@@ -1,0 +1,1 @@
+- [OpenAI error redaction](openai-error-redaction.md) — OpenAI 401 errors can include a credential prefix; log only sanitized status or type.
