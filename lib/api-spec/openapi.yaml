@@ -3,13 +3,15 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: ScamPatrol scam detection and incident management API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: scamPatrol
+    description: Scam analysis, incidents, reputation, and dashboard data
 paths:
   /healthz:
     get:
@@ -24,6 +26,165 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /scans:
+    post:
+      operationId: createScan
+      tags: [scamPatrol]
+      summary: Analyze a message, URL, phone number, or simulated call
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanInput"
+      responses:
+        "201":
+          description: Analysis completed and incident recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanResult"
+        "400":
+          description: Invalid input
+  /dashboard:
+    get:
+      operationId: getDashboard
+      tags: [scamPatrol]
+      summary: Get database-backed dashboard statistics and recent activity
+      responses:
+        "200":
+          description: Current dashboard data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
+  /incidents:
+    get:
+      operationId: getIncidents
+      tags: [scamPatrol]
+      summary: Search and filter saved scan incidents
+      parameters:
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: kind
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ScanKind"
+        - name: minRisk
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Matching incident records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Incident"
+                  total:
+                    type: integer
+  /incidents/{id}:
+    get:
+      operationId: getIncident
+      tags: [scamPatrol]
+      summary: Get an incident and its full explanation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Incident detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Incident"
+        "404":
+          description: Incident not found
+  /incidents/{id}/report:
+    post:
+      operationId: reportIncident
+      tags: [scamPatrol]
+      summary: Report an incident and update the target reputation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReportInput"
+      responses:
+        "200":
+          description: Report saved and reputation updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReputationRecord"
+        "404":
+          description: Incident not found
+  /reputation:
+    get:
+      operationId: getReputation
+      tags: [scamPatrol]
+      summary: List targets with reported scam activity
+      parameters:
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Reputation records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ReputationRecord"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +194,134 @@ components:
           type: string
       required:
         - status
+    ScanKind:
+      type: string
+      enum: [message, url, phone, call]
+    IncidentStatus:
+      type: string
+      enum: [blocked, caution, safe, reported]
+    RiskSignal:
+      type: object
+      required: [code, title, detail, points]
+      properties:
+        code:
+          type: string
+        title:
+          type: string
+        detail:
+          type: string
+        points:
+          type: integer
+    ScanInput:
+      type: object
+      required: [kind, input]
+      properties:
+        kind:
+          $ref: "#/components/schemas/ScanKind"
+        input:
+          type: string
+          minLength: 2
+          maxLength: 5000
+        callerName:
+          type: string
+          maxLength: 120
+    ScanResult:
+      type: object
+      required: [id, kind, target, originalInput, riskScore, category, recommendation, decision, status, isBlocked, signals, reportCount, createdAt]
+      properties:
+        id:
+          type: string
+        kind:
+          $ref: "#/components/schemas/ScanKind"
+        target:
+          type: string
+        originalInput:
+          type: string
+        riskScore:
+          type: integer
+          minimum: 0
+          maximum: 100
+        category:
+          type: string
+        recommendation:
+          type: string
+        decision:
+          type: string
+          enum: [allow, caution, block]
+        status:
+          $ref: "#/components/schemas/IncidentStatus"
+        isBlocked:
+          type: boolean
+        signals:
+          type: array
+          items:
+            $ref: "#/components/schemas/RiskSignal"
+        reportCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+    Incident:
+      allOf:
+        - $ref: "#/components/schemas/ScanResult"
+    Dashboard:
+      type: object
+      required: [totalScans, highRiskScans, blockedCalls, reportedTargets, recentIncidents, weeklyActivity, categoryBreakdown]
+      properties:
+        totalScans:
+          type: integer
+        highRiskScans:
+          type: integer
+        blockedCalls:
+          type: integer
+        reportedTargets:
+          type: integer
+        recentIncidents:
+          type: array
+          items:
+            $ref: "#/components/schemas/Incident"
+        weeklyActivity:
+          type: array
+          items:
+            type: object
+            required: [date, count]
+            properties:
+              date:
+                type: string
+                format: date
+              count:
+                type: integer
+        categoryBreakdown:
+          type: array
+          items:
+            type: object
+            required: [category, count]
+            properties:
+              category:
+                type: string
+              count:
+                type: integer
+    ReportInput:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+    ReputationRecord:
+      type: object
+      required: [identifier, kind, reportCount, riskBoost, lastReportedAt, isReported]
+      properties:
+        identifier:
+          type: string
+        kind:
+          type: string
+        reportCount:
+          type: integer
+        riskBoost:
+          type: integer
+        lastReportedAt:
+          type: string
+          format: date-time
+        isReported:
+          type: boolean
 

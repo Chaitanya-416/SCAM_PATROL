@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "ScamPatrol"
+description = "An explainable scam-detection dashboard for checking suspicious messages, URLs, phone numbers, and simulated calls, with persistent incident history and a clear call-blocking demonstration."
+version = "1.0.0"
+id = "artifacts/scampatrol"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 26107
+
+[services.development]
+run = "pnpm --filter @workspace/scampatrol run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/scampatrol", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/scampatrol/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "26107"
+BASE_PATH = "/"
